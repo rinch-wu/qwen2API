@@ -32,9 +32,17 @@ class User(BaseModel):
 @router.get("/status", dependencies=[Depends(verify_admin)])
 async def get_system_status(request: Request):
     pool = request.app.state.account_pool
+    accounts = pool.status()
+
+    # 兼容旧版前端字段：browser_engine.pool_size / browser_engine.queue
+    # 其中 pool_size 映射为每账号最大并发，queue 映射为当前等待数。
+    legacy_browser_engine = {
+        "pool_size": accounts.get("max_inflight", 0),
+        "queue": accounts.get("waiting", 0),
+    }
 
     return {
-        "accounts": pool.status(),
+        "accounts": accounts,
         "request_runtime": {
             "mode": "direct_http",
             "browser_required_for_requests": False,
@@ -43,7 +51,8 @@ async def get_system_status(request: Request):
         "browser_automation": {
             "mode": "on_demand_registration_only",
             "description": "仅注册/激活/刷新 Token 时按需启动真实浏览器",
-        }
+        },
+        "browser_engine": legacy_browser_engine,
     }
 
 @router.get("/users", dependencies=[Depends(verify_admin)])

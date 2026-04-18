@@ -9,8 +9,8 @@ DATA_DIR = BASE_DIR / "data"
 
 class Settings(BaseSettings):
     # 服务配置
-    PORT: int = int(os.getenv("PORT", 8080))
-    WORKERS: int = int(os.getenv("WORKERS", 3))
+    PORT: int = int(os.getenv("PORT", 7860))
+    WORKERS: int = int(os.getenv("WORKERS", 1))
     ADMIN_KEY: str = os.getenv("ADMIN_KEY", "admin")
 
     # 浏览器引擎配置
