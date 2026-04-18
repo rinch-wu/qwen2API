@@ -29,6 +29,10 @@ class User(BaseModel):
     quota: int
     used_tokens: int
 
+
+class BatchAccountsImportRequest(BaseModel):
+    content: str
+
 @router.get("/status", dependencies=[Depends(verify_admin)])
 async def get_system_status(request: Request):
     pool = request.app.state.account_pool
@@ -108,6 +112,57 @@ async def add_account(request: Request):
 
     await pool.add(acc)
     return {"ok": True, "email": acc.email}
+
+
+@router.post("/accounts/batch", dependencies=[Depends(verify_admin)])
+async def batch_import_accounts(payload: BatchAccountsImportRequest, request: Request):
+    pool: AccountPool = request.app.state.account_pool
+
+    lines = payload.content.splitlines()
+    added = 0
+    failed = 0
+    errors = []
+
+    existing_by_email = {acc.email: acc for acc in pool.accounts}
+
+    for idx, raw_line in enumerate(lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        if ":" not in line:
+            failed += 1
+            errors.append({"line": idx, "error": "格式错误，需为 email:password"})
+            continue
+
+        email, password = line.split(":", 1)
+        email = email.strip()
+        password = password.strip()
+
+        if not email or not password:
+            failed += 1
+            errors.append({"line": idx, "error": "email 或 password 为空"})
+            continue
+
+        account = existing_by_email.get(email)
+        if account:
+            account.password = password
+            added += 1
+            continue
+
+        new_account = Account(email=email, password=password)
+        pool.accounts.append(new_account)
+        existing_by_email[email] = new_account
+        added += 1
+
+    await pool.save()
+
+    return {
+        "ok": True,
+        "added": added,
+        "failed": failed,
+        "errors": errors,
+    }
 
 
 @router.get("/accounts", dependencies=[Depends(verify_admin)])

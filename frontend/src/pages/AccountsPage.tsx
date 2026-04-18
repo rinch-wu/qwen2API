@@ -76,6 +76,8 @@ export default function AccountsPage() {
   const [registerUnlocked, setRegisterUnlocked] = useState(false)
   const [verifying, setVerifying] = useState<string | null>(null)
   const [verifyingAll, setVerifyingAll] = useState(false)
+  const [batchInput, setBatchInput] = useState("")
+  const [batchImporting, setBatchImporting] = useState(false)
 
   // 邮箱+密码字段同时匹配时解锁注册功能
   useEffect(() => {
@@ -217,6 +219,42 @@ export default function AccountsPage() {
       .finally(() => setVerifyingAll(false))
   }
 
+  const handleBatchImport = () => {
+    if (!batchInput.trim()) {
+      toast.error("请输入 email:password 数据")
+      return
+    }
+
+    setBatchImporting(true)
+    const id = toast.loading("正在批量导入账号...")
+
+    fetch(`${API_BASE}/api/admin/accounts/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...getAuthHeader() },
+      body: JSON.stringify({ content: batchInput }),
+    }).then(res => res.json())
+      .then(data => {
+        if (data.ok) {
+          const summary = `导入完成：成功 ${data.added}，失败 ${data.failed}`
+          if (data.failed > 0) {
+            const firstError = data.errors?.[0]
+            toast.warning(firstError ? `${summary}（第 ${firstError.line} 行：${firstError.error}）` : summary, { id, duration: 8000 })
+          } else {
+            toast.success(summary, { id })
+          }
+          fetchAccounts()
+        } else {
+          toast.error("批量导入失败", { id })
+        }
+      })
+      .catch(() => toast.error("批量导入请求失败", { id }))
+      .finally(() => setBatchImporting(false))
+  }
+
+  const handleBatchClear = () => {
+    setBatchInput("")
+  }
+
   const handleActivate = (targetEmail: string) => {
     const id = toast.loading(`\u6b63\u5728\u6fc0\u6d3b ${targetEmail}...`)
     fetch(`${API_BASE}/api/admin/accounts/${encodeURIComponent(targetEmail)}/activate`, {
@@ -291,6 +329,28 @@ export default function AccountsPage() {
           </div>
           <Button onClick={handleAdd} variant="secondary" className="h-10 w-full md:w-auto font-semibold">
             <Plus className="mr-2 h-4 w-4" /> {"\u6ce8\u5165\u8d26\u53f7"}
+          </Button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border bg-card/40 p-6 space-y-4">
+        <div>
+          <h3 className="text-base font-bold">{"批量导入账号"}</h3>
+          <p className="text-sm text-muted-foreground">{"每行一个账号，格式为 email:password，支持换行分隔。"}</p>
+        </div>
+        <textarea
+          value={batchInput}
+          onChange={e => setBatchInput(e.target.value)}
+          className="min-h-40 w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono"
+          placeholder={"foo@example.com:pass123\nbar@example.com:pass456"}
+        />
+        <div className="flex gap-2 justify-end">
+          <Button variant="outline" onClick={handleBatchClear} disabled={batchImporting || !batchInput}>
+            {"清空"}
+          </Button>
+          <Button onClick={handleBatchImport} disabled={batchImporting}>
+            {batchImporting ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {"导入"}
           </Button>
         </div>
       </div>
