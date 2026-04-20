@@ -117,10 +117,13 @@ async def add_account(request: Request):
 @router.post("/accounts/batch", dependencies=[Depends(verify_admin)])
 async def batch_import_accounts(payload: BatchAccountsImportRequest, request: Request):
     pool: AccountPool = request.app.state.account_pool
+    client: QwenClient = request.app.state.qwen_client
+    auth_resolver = client.auth_resolver
 
     lines = payload.content.splitlines()
     added = 0
     failed = 0
+    skipped = 0
     errors = []
 
     existing_by_email = {acc.email: acc for acc in pool.accounts}
@@ -147,19 +150,33 @@ async def batch_import_accounts(payload: BatchAccountsImportRequest, request: Re
         account = existing_by_email.get(email)
         if account:
             account.password = password
+            if not account.token:
+                ok = await auth_resolver.refresh_token(account)
+                if ok and account.token:
+                    account.valid = True
+                else:
+                    account.valid = False
             added += 1
             continue
 
         new_account = Account(email=email, password=password)
         pool.accounts.append(new_account)
         existing_by_email[email] = new_account
-        added += 1
+
+        ok = await auth_resolver.refresh_token(new_account)
+        if ok and new_account.token:
+            new_account.valid = True
+            added += 1
+        else:
+            new_account.valid = False
+            skipped += 1
 
     await pool.save()
 
     return {
         "ok": True,
         "added": added,
+        "skipped": skipped,
         "failed": failed,
         "errors": errors,
     }
