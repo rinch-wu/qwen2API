@@ -775,27 +775,35 @@ class AuthResolver:
         if not acc.email or not acc.password:
             log.warning(f"[Refresh] 账号 {acc.email} 无密码，无法刷新")
             return False
-            
+
         log.info(f"[Refresh] 正在为 {acc.email} 刷新 token...")
         try:
             async with _new_browser() as browser:
                 page = await browser.new_page()
-                new_token = await _login_and_get_token(page, acc.email, acc.password, timeout_sec=20)
-                if new_token and new_token != acc.token:
-                    old_prefix = acc.token[:20] if acc.token else "空"
+                new_token_raw = await _login_and_get_token(page, acc.email, acc.password, timeout_sec=20)
+                new_token = (new_token_raw or "").strip()
+                old_token = (acc.token or "").strip()
+
+                if new_token and new_token != old_token:
+                    old_prefix = old_token[:20] if old_token else "空"
                     acc.token = new_token
                     acc.valid = True
                     await self.pool.save()
                     log.info(f"[Refresh] {acc.email} token 已更新 ({old_prefix}... → {new_token[:20]}...)")
                     return True
-                elif new_token == acc.token:
-                    # Token same but might still be valid — mark valid again
+
+                if new_token and new_token == old_token:
+                    # Token unchanged but non-empty can still be considered valid.
                     acc.valid = True
-                    log.info(f"[Refresh] {acc.email} token 未变化，重新标记有效")
+                    log.info(f"[Refresh] {acc.email} token 未变化且非空，重新标记有效")
                     return True
-                else:
-                    log.warning(f"[Refresh] {acc.email} 登录后未获取到token，URL={page.url}")
-                    return False
+
+                log.warning(
+                    f"[Refresh] {acc.email} 登录后 token 仍为空，刷新失败，URL={page.url}"
+                )
+                acc.valid = False
+                return False
         except Exception as e:
             log.error(f"[Refresh] {acc.email} 刷新异常: {e}")
             return False
+
