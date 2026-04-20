@@ -416,7 +416,7 @@ def build_prompt_with_tools(system_prompt: str, messages: list, tools: list, *, 
     MAX_CHARS = 24000 if (tools and client_profile == QWEN_CODE_OPENAI_PROFILE) else (18000 if tools else 120000)
     sys_part = "" if tools and _is_heavy_tool_profile(client_profile) else (f"<system>\n{system_prompt[:2000]}\n</system>" if system_prompt else "")
     tools_part = _build_tool_instruction_block(tools, client_profile) if tools else ""
-    opencode_override = bool(tools and client_profile == OPENCLAW_OPENAI_PROFILE and _looks_like_opencode_system_prompt(system_prompt))
+    opencode_override = bool(tools and client_profile == OPENCLAW_OPENAI_PROFILE and looks_like_opencode_system_prompt(system_prompt))
     if opencode_override and tools_part:
         tools_part = "\n".join(
             [
