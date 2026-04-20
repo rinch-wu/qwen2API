@@ -18,6 +18,42 @@ class QwenExecutor:
         self.account_pool = account_pool
         self.auth_resolver = AuthResolver(account_pool) if account_pool is not None else None
 
+    @staticmethod
+    def _is_unauthorized_error(err_msg: str) -> bool:
+        lowered = (err_msg or "").lower()
+        return "unauthorized" in lowered or "401" in lowered or "403" in lowered
+
+    @staticmethod
+    def _is_timeout_error(err_msg: str, exc: Exception) -> bool:
+        lowered = (err_msg or "").lower()
+        return (
+            "timeout" in lowered
+            or "timed out" in lowered
+            or "readtimeout" in lowered
+            or type(exc).__name__ in ("ReadTimeout", "TimeoutError", "TimeoutException")
+        )
+
+    async def _ensure_account_token(self, acc) -> bool:
+        token = str(getattr(acc, "token", "") or "").strip()
+        if token:
+            return True
+
+        if self.auth_resolver is None:
+            log.warning(f"[Executor] account={getattr(acc, 'email', '-') } missing token and auth resolver unavailable")
+            return False
+
+        if not getattr(acc, "password", ""):
+            log.warning(f"[Executor] account={getattr(acc, 'email', '-') } missing token and password; cannot refresh")
+            return False
+
+        log.info(f"[Executor] account={acc.email} missing token, attempting proactive refresh")
+        refreshed = await self.auth_resolver.refresh_token(acc)
+        if refreshed and str(getattr(acc, "token", "") or "").strip():
+            return True
+
+        log.warning(f"[Executor] account={acc.email} proactive refresh failed; token still missing")
+        return False
+
     async def create_chat(self, token: str, model: str, chat_type: str = "t2t") -> str:
         request_fn = getattr(self.engine, "_request_json", None) or getattr(self.engine, "api_call", None)
         if request_fn is None:
@@ -165,21 +201,49 @@ class QwenExecutor:
         if fixed_account is not None:
             update_request_context(upstream_attempt=1)
             acc = fixed_account
-            try:
-                log.info(f"[Executor] using fixed account={acc.email} model={model}")
-                chat_id = existing_chat_id or await self.create_chat(acc.token, model)
-                update_request_context(chat_id=chat_id)
-                if existing_chat_id:
-                    log.info(f"[Executor] reusing chat_id={chat_id} account={acc.email}")
-                else:
-                    log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
-                yield {"type": "meta", "chat_id": chat_id, "acc": acc}
-                async for evt in self.stream(acc.token, chat_id, model, content, has_custom_tools, files=files):
-                    yield {"type": "event", "event": evt}
-                return
-            except Exception:
-                self.account_pool.release(acc)
-                raise
+            fixed_max_attempts = 2
+            for fixed_attempt in range(fixed_max_attempts):
+                try:
+                    log.info(f"[Executor] using fixed account={acc.email} model={model} attempt={fixed_attempt + 1}")
+
+                    has_token = await self._ensure_account_token(acc)
+                    if not has_token:
+                        raise Exception("unauthorized: missing token and proactive refresh failed")
+
+                    chat_id = existing_chat_id or await self.create_chat(acc.token, model)
+                    update_request_context(chat_id=chat_id)
+                    if existing_chat_id:
+                        log.info(f"[Executor] reusing chat_id={chat_id} account={acc.email}")
+                    else:
+                        log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
+                    yield {"type": "meta", "chat_id": chat_id, "acc": acc}
+                    async for evt in self.stream(acc.token, chat_id, model, content, has_custom_tools, files=files):
+                        yield {"type": "event", "event": evt}
+                    return
+                except Exception as e:
+                    err_msg = str(e).lower()
+                    is_unauthorized = self._is_unauthorized_error(err_msg)
+
+                    if is_unauthorized and fixed_attempt < fixed_max_attempts - 1:
+                        self.account_pool.mark_invalid(acc, reason="auth_error", error_message=str(e))
+                        if "activation" in err_msg or "pending" in err_msg:
+                            acc.activation_pending = True
+
+                        recovered = False
+                        if self.auth_resolver is not None:
+                            recovered = await self.auth_resolver.refresh_token(acc)
+                            if not recovered:
+                                asyncio.create_task(self.auth_resolver.auto_heal_account(acc))
+
+                        if recovered and str(getattr(acc, "token", "") or "").strip():
+                            acc.valid = True
+                            acc.status_code = "valid"
+                            acc.last_error = ""
+                            log.info(f"[Executor] fixed account recovered after unauthorized, retrying account={acc.email}")
+                            continue
+
+                    self.account_pool.release(acc)
+                    raise
 
         for attempt in range(settings.MAX_RETRIES):
             update_request_context(upstream_attempt=attempt + 1)
@@ -189,6 +253,11 @@ class QwenExecutor:
 
             try:
                 log.info(f"[Executor] acquired account={acc.email} model={model} attempt={attempt + 1}")
+
+                has_token = await self._ensure_account_token(acc)
+                if not has_token:
+                    raise Exception("unauthorized: missing token and proactive refresh failed")
+
                 chat_id = await self.create_chat(acc.token, model)
                 update_request_context(chat_id=chat_id)
                 log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
@@ -200,13 +269,7 @@ class QwenExecutor:
 
             except Exception as e:
                 err_msg = str(e).lower()
-                # 检测超时错误
-                is_timeout = (
-                    "timeout" in err_msg
-                    or "timed out" in err_msg
-                    or "readtimeout" in err_msg
-                    or type(e).__name__ in ("ReadTimeout", "TimeoutError", "TimeoutException")
-                )
+                is_timeout = self._is_timeout_error(err_msg, e)
 
                 if is_timeout:
                     log.warning(f"[Executor] timeout detected attempt={attempt + 1}/{settings.MAX_RETRIES} account={acc.email} error={e}")
@@ -214,7 +277,7 @@ class QwenExecutor:
                 elif "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg:
                     self.account_pool.mark_rate_limited(acc)
                     exclude.add(acc.email)
-                elif "unauthorized" in err_msg or "401" in err_msg or "403" in err_msg:
+                elif self._is_unauthorized_error(err_msg):
                     self.account_pool.mark_invalid(acc)
                     exclude.add(acc.email)
                     if "activation" in err_msg or "pending" in err_msg:
@@ -230,3 +293,4 @@ class QwenExecutor:
                 )
 
         raise Exception(f"All {settings.MAX_RETRIES} attempts failed. Please check upstream accounts.")
+
