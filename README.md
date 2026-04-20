@@ -240,7 +240,7 @@ mkdir -p data logs
 ```yaml
 services:
   qwen2api:
-    image: yujunzhixue/qwen2api:latest
+    image: rinch345/rinch_qwen2api:latest
     container_name: qwen2api
     restart: unless-stopped
     env_file:
@@ -314,7 +314,7 @@ UPLOADED_FILES_FILE=/workspace/data/uploaded_files.json
 
 | 配置项 | 说明 | 建议修改 |
 |--------|------|----------|
-| `image` | 预构建镜像地址，支持 amd64/arm64 | 保持默认 `yujunzhixue/qwen2api:latest` |
+| `image` | 预构建镜像地址，支持 amd64/arm64 | 保持默认 `rinch345/rinch_qwen2api:latest` |
 | `ports` | 端口映射，格式：`宿主机端口:容器端口` | 如 7860 被占用，改为 `"8080:7860"` |
 | `volumes` | 数据持久化挂载 | **必须保留**，否则重启后数据丢失 |
 | `shm_size` | 浏览器共享内存 | 浏览器崩溃时改为 `"512m"` |
@@ -449,7 +449,7 @@ docker compose restart
 ```yaml
 services:
   qwen2api:
-    image: yujunzhixue/qwen2api:latest
+    image: rinch345/rinch_qwen2api:latest
     container_name: qwen2api
     restart: unless-stopped
     env_file:
